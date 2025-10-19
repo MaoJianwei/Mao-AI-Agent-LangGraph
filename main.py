@@ -61,7 +61,7 @@ async def app_lifespan(app: FastAPI):
     # checkpointer
     # global_area["checkpointer"] = InMemorySaver()
 
-    async with aiosqlite.connect("/home/mao/mao/llm/checkpoint_saver/saver.sqlite") as conn:
+    async with aiosqlite.connect("Z:/llm/modelupload/checkpoint_saver/saver.sqlite") as conn:
         global_area["checkpointer"] = AsyncSqliteSaver(conn)
 
         # store
@@ -288,5 +288,5 @@ if __name__ == "__main__":
         app="main:app",  # 应用入口：模块名:应用实例名（字符串格式）
         host="0.0.0.0",  # 监听地址（0.0.0.0 允许外部访问）
         port=7181,  # 端口
-        reload=True,  # 开发模式：代码修改后自动重启（生产环境禁用）
+        reload=True,  # 开发模式：代码修改后自动重启（生产环境禁用），pycharm调试必须使用True
     )
