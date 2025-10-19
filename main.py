@@ -1,13 +1,9 @@
 import os
-import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import TypedDict, Annotated
 
-from IPython.core.display import Image
-from IPython.core.display_functions import display
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import AnyMessage, AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -17,6 +13,10 @@ from langgraph.func import task
 from langgraph.graph import StateGraph, add_messages
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt, Command
+
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
 
 from lib.constant import NEED_ID_USER_CHAT_INPUT
 
@@ -29,7 +29,6 @@ from starlette.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 import uvicorn
 
-import asyncio
 """ ========== """
 
 
@@ -60,50 +59,53 @@ async def app_lifespan(app: FastAPI):
     # global checkpointer, llm, graph
 
     # checkpointer
-    global_area["checkpointer"] = InMemorySaver()
+    # global_area["checkpointer"] = InMemorySaver()
 
-    # store
+    async with aiosqlite.connect("/home/mao/mao/llm/checkpoint_saver/saver.sqlite") as conn:
+        global_area["checkpointer"] = AsyncSqliteSaver(conn)
 
-
-    # LLM
-    global_area["llm"] = ChatOpenAI(
-        model_name="glm-4.5-flash",  # 私有部署的模型名称
-        openai_api_base="https://open.bigmodel.cn/api/paas/v4/",
-        openai_api_key=os.getenv("MAO_OPENAI_KEY"),
-        # disable_streaming = True
-    )
-
-    # llm = init_chat_model(model="openai:glm-4.5-flash",
-    #                       base_url="https://open.bigmodel.cn/api/paas/v4/",
-    #                       api_key="27943078d7714b0a9e63c37a338f1051.GXJ9LixW6DWRTti6",
-    #                       disable_streaming=False)
+        # store
 
 
-    graph_builder = StateGraph(MaoTotalState, MaoContextSchema)
+        # LLM
+        global_area["llm"] = ChatOpenAI(
+            model_name="glm-4.5-flash",  # 私有部署的模型名称
+            openai_api_base="https://open.bigmodel.cn/api/paas/v4/",
+            openai_api_key=os.getenv("MAO_OPENAI_KEY"),
+            # disable_streaming = True
+        )
 
-    # graph_builder.add_node("session_list_show_and_choose", session_list_show_and_choose)
-    # graph_builder.add_node("session_print_and_verify", session_print_and_verify)
-    # graph_builder.add_node("simple_chat", simple_chat)
-    #
-    # graph_builder.add_edge(START, "session_list_show_and_choose")
-    # graph_builder.add_edge("session_list_show_and_choose", "session_print_and_verify")
-    # graph_builder.add_edge("session_print_and_verify", "simple_chat")
-    # graph_builder.add_edge("simple_chat", "simple_chat")
+        # llm = init_chat_model(model="openai:glm-4.5-flash",
+        #                       base_url="https://open.bigmodel.cn/api/paas/v4/",
+        #                       api_key="27943078d7714b0a9e63c37a338f1051.GXJ9LixW6DWRTti6",
+        #                       disable_streaming=False)
 
 
-    graph_builder.add_node("simple_webui_chat", simple_webui_chat)
+        graph_builder = StateGraph(MaoTotalState, MaoContextSchema)
 
-    graph_builder.add_edge(START, "simple_webui_chat")
-    graph_builder.add_edge("simple_webui_chat", END)
+        # graph_builder.add_node("session_list_show_and_choose", session_list_show_and_choose)
+        # graph_builder.add_node("session_print_and_verify", session_print_and_verify)
+        # graph_builder.add_node("simple_chat", simple_chat)
+        #
+        # graph_builder.add_edge(START, "session_list_show_and_choose")
+        # graph_builder.add_edge("session_list_show_and_choose", "session_print_and_verify")
+        # graph_builder.add_edge("session_print_and_verify", "simple_chat")
+        # graph_builder.add_edge("simple_chat", "simple_chat")
 
-    global_area["graph"] = graph_builder.compile(checkpointer=global_area["checkpointer"])
 
-    mermaid_code = global_area["graph"].get_graph().draw_mermaid()
-    print(mermaid_code)
+        graph_builder.add_node("simple_webui_chat", simple_webui_chat)
 
-    yield
+        graph_builder.add_edge(START, "simple_webui_chat")
+        graph_builder.add_edge("simple_webui_chat", END)
 
-    print("Mao：关闭，释放全局变量")
+        global_area["graph"] = graph_builder.compile(checkpointer=global_area["checkpointer"])
+
+        mermaid_code = global_area["graph"].get_graph().draw_mermaid()
+        print(mermaid_code)
+
+        yield
+
+        print("Mao：关闭，释放全局变量")
 
 
 
@@ -165,7 +167,7 @@ async def webui_agent_entry(user_message, session_id):
 
 
     stream_event_type = ["updates", "custom"] # "messages"（会依次输出：流式每个token、完整HumanMessage、完整AImessage，不好用，区分不开各种消息。）,
-    for stream_mode, chunk in global_area["graph"].stream(run_data, stream_mode=stream_event_type, config=config, context=context): # "messages"
+    async for stream_mode, chunk in global_area["graph"].astream(run_data, stream_mode=stream_event_type, config=config, context=context): # "messages"
         # print(stream_mode, chunk)
         if stream_mode == "updates":
             print(f"*** stream_mode: {stream_mode}, chunk: {chunk}")
@@ -213,7 +215,7 @@ async def chat(request: dict):
 
 
     if not prompt:
-        raise HTTPException(status_code=400, detail="Prompt is required")
+        raise HTTPException(status_code=400, detail="user-message is required")
 
 
     async def event_generator():
@@ -234,30 +236,43 @@ async def chat(request: dict):
 
 
 
-# @app.post("/get-session-history")
-# async def get_session_history(request: dict):
-#
-#     session_id_input = request.get("session-id")
-#
-#
-#     if not prompt:
-#         raise HTTPException(status_code=400, detail="Prompt is required")
-#
-#
-#     async def event_generator():
-#         session_id = session_id_input
-#         if not session_id:
-#             session_id = gen_session_id()
-#             yield {"data": {"type": "session_id_text", "data": session_id}}
-#
-#         async for data in webui_agent_entry(prompt, session_id):
-#             # SSE 要求每条消息是 data: ... \n\n 格式
-#             yield {"data": data}
-#         # 可选：发送结束标记
-#         yield {"data": {"type": "done", "data": ""}}
-#         print("Mao 请求处理完成")
-#
-#     return EventSourceResponse(event_generator(), media_type="text/event-stream")
+@app.post("/get-session-history")
+async def get_session_history(request: dict):
+
+    session_id_input = request.get("session-id")
+
+    if not session_id_input:
+        raise HTTPException(status_code=400, detail="session-id is required")
+
+
+    async def event_generator():
+
+        config = {"configurable": {"thread_id": session_id_input}}
+
+        cp_list = global_area["checkpointer"].alist(config)
+        async for checkpoint in cp_list:
+            yield {"data": {"type": "history_unknown", "data": checkpoint}}
+
+        yield {"data": {"type": "done", "data": ""}}
+        print("Mao 请求处理完成")
+
+    return EventSourceResponse(event_generator(), media_type="text/event-stream")
+
+
+
+
+@app.post("/get-session-list")
+async def get_session_list(request: dict):
+
+    async def event_generator():
+        cp_list = global_area["checkpointer"].alist(config=None)
+        async for checkpoint in cp_list:
+            yield {"data": {"type": "history_unknown", "data": checkpoint}}
+
+        yield {"data": {"type": "done", "data": ""}}
+        print("Mao 请求处理完成")
+
+    return EventSourceResponse(event_generator(), media_type="text/event-stream")
 
 
 
@@ -269,11 +284,9 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 # 在 Python 代码中启动 Uvicorn
 if __name__ == "__main__":
 
-    # 调用 uvicorn.run() 方法
     uvicorn.run(
         app="main:app",  # 应用入口：模块名:应用实例名（字符串格式）
         host="0.0.0.0",  # 监听地址（0.0.0.0 允许外部访问）
-        port=7181,       # 端口
-        reload=False,      # 开发模式：代码修改后自动重启（生产环境禁用）
-        workers=12
+        port=7181,  # 端口
+        reload=True,  # 开发模式：代码修改后自动重启（生产环境禁用）
     )
